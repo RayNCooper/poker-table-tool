@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['main.py', 'extract_gg.py', 'extract_acr.py', 'extract_888.py'],
     pathex=[],
     binaries=[],
     datas=[],

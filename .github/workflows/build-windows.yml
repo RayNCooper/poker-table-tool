@@ -47,7 +47,7 @@ jobs:
 
     - name: Build Executable with PyInstaller
       run: |
-        poetry run pyinstaller main.py --onefile --windowed --icon=path\to\icon.ico
+        poetry run pyinstaller main.py --onefile --windowed
       shell: pwsh
 
     - name: Upload Executable as Artifact
