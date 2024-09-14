@@ -1,0 +1,5 @@
+examples
+__pycache__
+.DS_Store
+chart.html
+session_stats.html
