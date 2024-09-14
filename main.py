@@ -12,11 +12,13 @@ import webbrowser
 # Import extraction modules
 import extract_gg
 import extract_888
+import extract_acr
 
 # Mapping categories to their respective extraction modules
 EXTRACTION_MODULES = {
     "GG": extract_gg,
-    "888": extract_888
+    "888": extract_888,
+    "ACR": extract_acr
 }
 
 # Function to calculate and return statistics
@@ -307,7 +309,7 @@ category_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
 
 category_var = tk.StringVar()
 category_combobox = ttk.Combobox(main_frame, textvariable=category_var, state="readonly")
-category_combobox['values'] = ("GG", "888")
+category_combobox['values'] = ("GG", "888", "ACR")
 category_combobox.current(0)
 category_combobox.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
 
