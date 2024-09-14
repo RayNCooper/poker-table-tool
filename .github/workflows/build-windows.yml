@@ -53,5 +53,4 @@ jobs:
     - name: Upload Executable as Artifact
       uses: actions/upload-artifact@v3
       with:
-        name: TournamentSessionAnalyzer
-        path: dist/TournamentSessionAnalyzer.exe
+        path: dist
