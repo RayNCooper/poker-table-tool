@@ -1,0 +1,40 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'  # Ensure this matches your project's Python version
+
+    - name: Install Poetry
+      run: |
+        curl -sSL https://install.python-poetry.org | python -
+        echo "::add-path::${HOME}\.local\bin"
+
+    - name: Configure Poetry
+      run: |
+        poetry config virtualenvs.create false
+        poetry install --no-interaction --no-ansi
+
+    - name: Build Executable with PyInstaller
+      run: |
+        poetry run pyinstaller main.py --onefile --windowed
+
+    - name: Upload Executable as Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: TournamentSessionAnalyzer
+        path: dist/TournamentSessionAnalyzer.exe
