@@ -1,337 +1,564 @@
-# main.py
-
 import os
+import re
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
 from collections import defaultdict
-from datetime import datetime, timedelta
+import datetime
 import plotly.express as px
 import pandas as pd
+import plotly.io as pio
 import webbrowser
 
-# Import extraction modules
-import extract_gg
-import extract_888
-import extract_acr
+# Function to select files
+def select_files():
+    files = filedialog.askopenfilenames(title="Select Hand History Files")
+    if files:
+        root.withdraw()  # Hide the root window
+        process_files(files)
+    else:
+        messagebox.showerror("Error", "No files selected.")
 
-# Mapping categories to their respective extraction modules
-EXTRACTION_MODULES = {
-    "GG": extract_gg,
-    "888": extract_888,
-    "ACR": extract_acr
-}
+# Function to extract tournament label from file name
+def extract_tournament_label(file_name):
+    patterns = [
+        r'Tournament (.+?) \(',  # Pattern for 888poker example
+        r'TN-(.+?) GAMETYPE-',   # Pattern for HH20230320 example
+        r'- (.+)\.txt$',         # Pattern for GG example
+        r'HH\d+ (.+?)\.txt$',    # Pattern for HH files
+        r'\d+_(.+?)\(\d+\)_real_holdem_no-limit\.txt$',  # Pattern for 20230312_MYSTERY KO example
+        r'\d+_(.+?)\.txt$',      # Additional pattern for general cases
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, file_name)
+        if match:
+            return match.group(1).strip()
+    return None
 
-# Function to calculate and return statistics
-def calculate_statistics(tournament_data):
-    total_bullets, re_entries, unique_tournaments = 0, 0, len(tournament_data)
-    total_duration, peak_duration = timedelta(), timedelta()
-    timeline = []
+# Function to process files
+def process_files(file_list):
+    hand_histories = []
 
-    # Creating a timeline with start and end times to calculate average and peak tables played
-    for tournament_name, entries in tournament_data.items():
-        total_bullets += len(entries)
-        re_entries += len(entries) - 1 if len(entries) > 1 else 0
-        for entry in entries:
-            duration = entry['last_hand_time'] - entry['first_hand_time']
-            total_duration += duration
-            timeline.append((entry['first_hand_time'], 1))  # Add event for starting a table
-            timeline.append((entry['last_hand_time'], -1))  # Add event for closing a table
+    for file in file_list:
+        # Skip summary files
+        if "Summary" in os.path.basename(file):
+            print(f"Skipping summary file {file}")
+            continue
+        try:
+            with open(file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                site = identify_site(content)
+                if site:
+                    tournament_label = extract_tournament_label(os.path.basename(file))
+                    hands, player = parse_hand_history(content, site, tournament_label)
+                    if not player:
+                        print(f"No player found in file {file}")
+                        continue  # Skip if no player found
+                    for hand in hands:
+                        hand['player'] = player
+                    hand_histories.extend(hands)
+                else:
+                    print(f"Could not identify site for file {file}")
+        except Exception as e:
+            print(f"Error processing {file}: {e}")
 
-    # Sort the timeline based on time
-    timeline.sort()
+    if not hand_histories:
+        messagebox.showerror("Error", "No valid hand histories found.")
+        return
 
-    # Calculating max tables played at a time and average tables played
-    max_tables, current_tables = 0, 0
-    total_tables_time, last_time = timedelta(), None
-    peak_duration = timedelta()
+    plot_gantt_chart(hand_histories)
 
-    for time, change in timeline:
-        if last_time is not None:
-            elapsed_time = time - last_time
-            total_tables_time += elapsed_time * current_tables
+# Function to identify the site based on content
+def identify_site(content):
+    if "PokerStars Hand" in content:
+        return "PokerStars"
+    elif "Game Hand #" in content and "Tournament #" in content and "Holdem" in content:
+        return "ACR"
+    elif "888poker Hand History" in content:
+        return "888"
+    elif "Poker Hand #" in content and "Tournament #" in content:
+        return "GG"
+    elif "Winamax Poker - Tournament" in content:
+        return "Winamax"
+    else:
+        return None
 
-            # Checking if we are in the peak overlap time
-            if current_tables == max_tables:
-                peak_duration += elapsed_time
+# Function to parse hand history
+def parse_hand_history(content, site, tournament_label=None):
+    hands = []
+    player = None
+    if site == "ACR":
+        # Regex patterns for ACR
+        player_seats = re.findall(r"Seat \d+: (\S+)", content)
+        if player_seats:
+            player_counts = defaultdict(int)
+            for p in player_seats:
+                player_counts[p] += 1
+            player = max(player_counts, key=player_counts.get)
+        else:
+            print("Player not found in ACR hand history.")
+            return [], None
 
-        current_tables += change
-        if current_tables > max_tables:
-            max_tables = current_tables
-            peak_duration = timedelta()  # Reset peak time duration when new max is reached
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"- (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})"
+        hand_pattern = r"Game Hand #(\d+) - Tournament #(\d+)"
+        date_format = '%Y/%m/%d %H:%M:%S'
 
-        last_time = time
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
 
-    # Calculating average tables played across the full session
-    full_session_duration = timeline[-1][0] - timeline[0][0] if timeline else timedelta()
-    avg_tables_played = total_tables_time.total_seconds() / full_session_duration.total_seconds() if full_session_duration else 0
+        # Extract starting stack and blinds
+        starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d\.]+)\)"
+        blinds_pattern = r"Level \d+ \(([\d\.]+)/([\d\.]+)\)"
 
-    return {
-        "Session duration": str(full_session_duration).split('.')[0],
-        "Unique tournaments played": unique_tournaments,
-        "Re-Entries": re_entries,
-        "Total bullets": total_bullets,
-        "Average duration per tournament": str(total_duration / total_bullets).split('.')[0] if total_bullets else "00:00:00",
-        "Maximum tables played at a time": max_tables,
-        "Average tables played": round(avg_tables_played, 2),
-        "Peak tables played for (total time)": str(peak_duration).split('.')[0]
-    }
+        starting_stack_match = re.search(starting_stack_pattern, content)
+        blinds_match = re.search(blinds_pattern, content)
 
-# Function to plot the tournament data using Plotly and export HTML
-# main.py (only the plot_tournament_data function is shown)
+        if starting_stack_match and blinds_match:
+            starting_stack = float(starting_stack_match.group(1).replace(',', ''))
+            big_blind = float(blinds_match.group(2).replace(',', ''))
+            starting_bb = starting_stack / big_blind
+        else:
+            starting_bb = None
 
-def plot_tournament_data(tournament_data, stats):
-    data = []
-    for i, (tournament_name, entries) in enumerate(tournament_data.items()):
-        # Sort the entries by first_hand_time to ensure correct ordering
-        sorted_entries = sorted(entries, key=lambda x: x['first_hand_time'])
-        for j, entry in enumerate(sorted_entries):
-            start_time = entry['first_hand_time']
-            end_time = entry['last_hand_time']
-            stack_in_bb = entry.get('stack_in_bb', "N/A")
-            entry_type = "Re-entry" if j > 0 else "First entry"
-            formatted_start_time = start_time.strftime('%H:%M')
-            formatted_end_time = end_time.strftime('%H:%M')  # Added for hover info
-            data.append({
-                'Tournament': tournament_name,
-                'Category': entry['category'],
-                'Start Time': start_time,
-                'Formatted Start Time': formatted_start_time,  # Added
-                'End Time': end_time,
-                'Formatted End Time': formatted_end_time,      # Added
-                'Stack (BB)': f"{stack_in_bb} BB" if stack_in_bb != "N/A" else "N/A",
-                'Entry Type': entry_type,
-                'Game Number': entry.get('game_number', "N/A"),
-                'Table Number': entry.get('table_number', "N/A"),
-                'Max Players': entry.get('max_players', "N/A"),
-                'Currency': entry.get('currency', "N/A"),
-                'Hero Name': entry.get('hero_name', "N/A")
+        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        if not tournament_label:
+            tournament_label = tournament_name
+
+        for idx, (hand_id, tour_id) in enumerate(hands_info):
+            hand_date = dates[idx] if idx < len(dates) else None
+            hands.append({
+                'site': site,
+                'tournament_id': tour_id,
+                'hand_id': hand_id,
+                'date': parse_date(hand_date, [date_format]),
+                'player': player,
+                'starting_bb': starting_bb,
+                'tournament_name': tournament_name,
+                'tournament_label': tournament_label,
             })
 
-    df = pd.DataFrame(data)
+    elif site == "888":
+        # Similar code for 888
+        player_seats = re.findall(r"Seat \d+: (\S+)", content)
+        if player_seats:
+            player_counts = defaultdict(int)
+            for p in player_seats:
+                player_counts[p] += 1
+            player = max(player_counts, key=player_counts.get)
+        else:
+            print("Player not found in 888 hand history.")
+            return [], None
 
-    # Customizing the color scale for first entry and re-entry
-    color_discrete_map = {
-        'First entry': 'lightgrey',
-        'Re-entry': 'red'
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"\*\*\* (.+)"
+        hand_pattern = r"Game (\d+)"
+        date_format = '%d %m %Y %H:%M:%S'
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
+
+        # Do not extract starting_bb for 888
+        starting_bb = None
+
+        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        if not tournament_label:
+            tournament_label = tournament_name
+
+        for idx, hand_id in enumerate(hands_info):
+            hand_date = dates[idx] if idx < len(dates) else None
+            hands.append({
+                'site': site,
+                'tournament_id': tournament_name,
+                'hand_id': hand_id,
+                'date': parse_date(hand_date, [date_format]),
+                'player': player,
+                'starting_bb': starting_bb,
+                'tournament_name': tournament_name,
+                'tournament_label': tournament_label,
+            })
+
+    elif site == "GG":
+        # Similar code for GG
+        player_seats = re.findall(r"Seat \d+: (\S+) \(", content)
+        if player_seats:
+            player_counts = defaultdict(int)
+            for p in player_seats:
+                player_counts[p] += 1
+            player = max(player_counts, key=player_counts.get)
+        else:
+            print("Player not found in GG hand history.")
+            return [], None
+
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"Level\d+\([\d,]+/[\d,]+\) - (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})"
+        hand_pattern = r"Poker Hand #(\S+): Tournament #(\d+)"
+        date_format = '%Y/%m/%d %H:%M:%S'
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
+
+        starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d,]+) in chips\)"
+        blinds_pattern = r"Level\d+\(([\d,]+)/([\d,]+)\)"
+
+        starting_stack_match = re.search(starting_stack_pattern, content)
+        blinds_match = re.search(blinds_pattern, content)
+
+        if starting_stack_match and blinds_match:
+            starting_stack = float(starting_stack_match.group(1).replace(',', ''))
+            big_blind = float(blinds_match.group(2).replace(',', ''))
+            starting_bb = starting_stack / big_blind
+        else:
+            starting_bb = None
+
+        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        if not tournament_label:
+            tournament_label = tournament_name
+
+        for idx, (hand_id, tour_id) in enumerate(hands_info):
+            hand_date = dates[idx] if idx < len(dates) else None
+            hands.append({
+                'site': site,
+                'tournament_id': tour_id,
+                'hand_id': hand_id,
+                'date': parse_date(hand_date, [date_format]),
+                'player': player,
+                'starting_bb': starting_bb,
+                'tournament_name': tournament_name,
+                'tournament_label': tournament_label,
+            })
+
+    elif site == "PokerStars":
+        # Similar code for PokerStars
+        player_seats = re.findall(r"Seat \d+: (\S+) \(", content)
+        if player_seats:
+            player_counts = defaultdict(int)
+            for p in player_seats:
+                player_counts[p] += 1
+            player = max(player_counts, key=player_counts.get)
+        else:
+            print("Player not found in PokerStars hand history.")
+            return [], None
+
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"\[([^\]]+)\]"
+        hand_pattern = r"PokerStars Hand #(\d+): Tournament #(\d+)"
+        date_formats = ['%Y/%m/%d %H:%M:%S ET', '%Y/%m/%d %H:%M:%S CET']
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
+
+        starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d,]+) in chips"
+        blinds_pattern = r"Level \w+ \(([\d,]+)/([\d,]+)\)"
+
+        starting_stack_match = re.search(starting_stack_pattern, content)
+        blinds_match = re.search(blinds_pattern, content)
+
+        if starting_stack_match and blinds_match:
+            starting_stack = float(starting_stack_match.group(1).replace(',', ''))
+            big_blind = float(blinds_match.group(2).replace(',', ''))
+            starting_bb = starting_stack / big_blind
+        else:
+            starting_bb = None
+
+        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        if not tournament_label:
+            tournament_label = tournament_name
+
+        for idx, (hand_id, tour_id) in enumerate(hands_info):
+            hand_date = dates[idx] if idx < len(dates) else None
+            hand_date_parsed = parse_date(hand_date, date_formats)
+            hands.append({
+                'site': site,
+                'tournament_id': tour_id,
+                'hand_id': hand_id,
+                'date': hand_date_parsed,
+                'player': player,
+                'starting_bb': starting_bb,
+                'tournament_name': tournament_name,
+                'tournament_label': tournament_label,
+            })
+
+    elif site == "Winamax":
+        # Similar code for Winamax
+        player_seats = re.findall(r"Seat \d+: (\S+)", content)
+        if player_seats:
+            player_counts = defaultdict(int)
+            for p in player_seats:
+                player_counts[p] += 1
+            player = max(player_counts, key=player_counts.get)
+        else:
+            print("Player not found in Winamax hand history.")
+            return [], None
+
+        tournament_pattern = r"Tournament \"(.+?)\""
+        date_pattern = r"- (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) UTC"
+        hand_pattern = r"HandId: #(\d+)-"
+        date_format = '%Y/%m/%d %H:%M:%S'
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
+
+        # Do not extract starting_bb for Winamax
+        starting_bb = None
+
+        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        if not tournament_label:
+            tournament_label = tournament_name
+
+        for idx, hand_id in enumerate(hands_info):
+            hand_date = dates[idx] if idx < len(dates) else None
+            hand_date_parsed = parse_date(hand_date, [date_format])
+            hands.append({
+                'site': site,
+                'tournament_id': tournament_name,
+                'hand_id': hand_id,
+                'date': hand_date_parsed,
+                'player': player,
+                'starting_bb': starting_bb,
+                'tournament_name': tournament_name,
+                'tournament_label': tournament_label,
+            })
+
+    return hands, player
+
+# Function to parse date
+def parse_date(date_str, date_formats):
+    if date_str:
+        for fmt in date_formats:
+            try:
+                return datetime.datetime.strptime(date_str.strip(), fmt)
+            except:
+                continue
+    return None
+
+# Function to plot Gantt chart using plotly
+def plot_gantt_chart(hands):
+    # Prepare data
+    tournament_entries = defaultdict(lambda: {'dates': [], 'starting_bb': None, 'tournament_label': None})
+    for hand in hands:
+        if hand['date']:
+            key = (hand['site'], hand['tournament_id'], hand['player'])
+            tournament_entries[key]['dates'].append(hand['date'])
+            if tournament_entries[key]['starting_bb'] is None:
+                tournament_entries[key]['starting_bb'] = hand['starting_bb']
+            if tournament_entries[key]['tournament_label'] is None:
+                tournament_entries[key]['tournament_label'] = hand['tournament_label']
+            tournament_entries[key]['tournament_name'] = hand['tournament_name']
+
+    entries = []
+    for key, value in tournament_entries.items():
+        site, tournament_id, player = key
+        dates = value['dates']
+        starting_bb = value['starting_bb']
+        dates.sort()
+        tournament_label = value['tournament_label']
+        # Detect re-entries based on time gaps
+        entries_in_tournament = []
+        current_entry = [dates[0], dates[0]]
+        for i in range(1, len(dates)):
+            if (dates[i] - dates[i-1]).total_seconds() > 1800:  # Gap of more than 30 minutes
+                current_entry[1] = dates[i-1]
+                entries_in_tournament.append(tuple(current_entry))
+                current_entry = [dates[i], dates[i]]
+            else:
+                current_entry[1] = dates[i]
+        current_entry[1] = dates[-1]
+        entries_in_tournament.append(tuple(current_entry))
+        for idx, (start_time, end_time) in enumerate(entries_in_tournament):
+            entry_type = 'Entry' if idx == 0 else 'Re-Entry'
+            category = site  # Use only 'site' for coloring to limit legend items to 5
+            entries.append({
+                'Tournament': tournament_label,
+                'Start': start_time,
+                'Finish': end_time,
+                'Site': site,
+                'Category': category,
+                'Player': player,
+                'Entry': entry_type,
+                'Starting_BB': starting_bb,
+            })
+
+    if not entries:
+        messagebox.showerror("Error", "No valid dates found in hand histories.")
+        return
+
+    df = pd.DataFrame(entries)
+    base_colors = {
+        'GG': '#ff0000',
+        'ACR': '#0000ff',
+        'Winamax': '#008000',
+        'PokerStars': '#800080',
+        '888': '#ffa500'
     }
 
-    # Create the graph
+    # Compute statistics
+    session_start = df['Start'].min()
+    session_end = df['Finish'].max()
+    session_duration = session_end - session_start
+
+    unique_tournaments = df['Tournament'].nunique()
+    total_bullets = len(df)
+    re_entries = total_bullets - unique_tournaments
+
+    df['Duration'] = df['Finish'] - df['Start']
+    tournament_durations = df.groupby('Tournament')['Duration'].sum()
+    avg_duration_per_tournament = tournament_durations.mean()
+
+    # Compute tables played over time
+    events = []
+    for index, row in df.iterrows():
+        events.append((row['Start'], 'start'))
+        events.append((row['Finish'], 'end'))
+    events.sort()
+
+    current_tables = 0
+    max_tables = 0
+    time_of_last_event = None
+    table_time = defaultdict(datetime.timedelta)
+
+    for time, event_type in events:
+        if time_of_last_event is not None:
+            duration = time - time_of_last_event
+            table_time[current_tables] += duration
+        if event_type == 'start':
+            current_tables += 1
+            if current_tables > max_tables:
+                max_tables = current_tables
+        elif event_type == 'end':
+            current_tables -= 1
+        time_of_last_event = time
+
+    total_session_duration = session_end - session_start
+
+    total_weighted_time = sum(tables * duration.total_seconds() for tables, duration in table_time.items())
+    average_tables = total_weighted_time / total_session_duration.total_seconds() if total_session_duration.total_seconds() > 0 else 0
+
+    peak_tables_time = table_time[max_tables]
+
+    # Format statistics
+    stats_text = (
+        f"<b>Session Duration:</b> {str(session_duration)}<br>"
+        f"<b>Unique Tournaments Played:</b> {unique_tournaments}<br>"
+        f"<b>Re-Entries:</b> {re_entries}<br>"
+        f"<b>Total Bullets:</b> {total_bullets}<br>"
+        f"<b>Avg Duration per Tournament:</b> {str(avg_duration_per_tournament)}<br>"
+        f"<b>Maximum Tables Played at a Time:</b> {max_tables}<br>"
+        f"<b>Average Tables Played:</b> {average_tables:.2f}<br>"
+        f"<b>Peak Tables Played For:</b> {str(peak_tables_time)}"
+    )
+
+    # Create the plot
+    df['Start_str'] = df['Start'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df['Finish_str'] = df['Finish'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    # Prepare hover data
+    # Create a new column 'Starting_BB_Display' for hover data
+    df['Starting_BB_Display'] = df.apply(
+        lambda row: f"{row['Starting_BB']:.1f}" if row['Site'] in ['ACR', 'PokerStars', 'GG'] and pd.notnull(row['Starting_BB']) else None, axis=1
+    )
+
+    # Define hover data columns
+    hover_data = {
+        'Site': True,
+        'Start_str': True,
+        'Finish_str': True,
+        'Tournament': True,
+        'Entry': True,
+        'Starting_BB_Display': True,
+    }
+
+    # Build custom hover template
+    hover_template = (
+        'Site=%{customdata[0]}<br>'
+        'Start=%{customdata[1]}<br>'
+        'Finish=%{customdata[2]}<br>'
+        'Tournament=%{customdata[3]}<br>'
+        'Entry Type=%{customdata[4]}<br>'
+    )
+    hover_template += '%{customdata[5]}<extra></extra>'
+
+    # Prepare custom data for hover
+    df['Starting_BB_Hover'] = df.apply(
+        lambda row: f"Starting BB={row['Starting_BB_Display']}" if row['Starting_BB_Display'] else '', axis=1
+    )
+
+    custom_data = df[['Site', 'Start_str', 'Finish_str', 'Tournament', 'Entry', 'Starting_BB_Hover']]
+
     fig = px.timeline(
         df,
-        x_start="Start Time",
-        x_end="End Time",
-        y='Tournament',
-        color='Entry Type',
-        color_discrete_map=color_discrete_map,
-        hover_data={
-            'Formatted Start Time': True,  # Changed to True if needed
-            'Formatted End Time': True,    # Added
-            'Stack (BB)': True,
-            'Category': True,
-            'Game Number': True,
-            'Table Number': True,
-            'Max Players': True,
-            'Currency': True,
-            'Hero Name': True
-        },
-        height=600,
-        title="Tournament Sessions"
+        x_start="Start",
+        x_end="Finish",
+        y="Tournament",
+        color="Site",
+        color_discrete_map=base_colors,
+        hover_data=None,
+        custom_data=custom_data,
     )
-    fig.update_traces(
-        hovertemplate=(
-            "<b>Tournament:</b> %{y}<br>"
-            "<b>Entry Type:</b> %{marker.color}<br>"
-            "<b>Game Number:</b> %{customdata[0]}<br>"
-            "<b>Table Number:</b> %{customdata[1]}<br>"
-            "<b>Max Players:</b> %{customdata[2]}<br>"
-            "<b>Currency:</b> %{customdata[3]}<br>"
-            "<b>Hero Name:</b> %{customdata[4]}<br>"
-            "<b>Start Time:</b> %{customdata[5]}<br>"
-            "<b>End Time:</b> %{customdata[6]}<br>"
-            "<b>Stack:</b> %{customdata[7]}"
-        )
-    )
+
+    fig.update_traces(hovertemplate=hover_template)
+
+    fig.update_yaxes(autorange="reversed")
     fig.update_layout(
-        yaxis_title="Tournament",
-        xaxis_title="Session Time",
-        legend_title="Entry Type",
-        legend=dict(
-            title_font_family="Arial",
-            font=dict(
-                family="Arial",
-                size=12,
-                color="white"
-            )
-        ),
-        margin=dict(l=150, r=50, t=100, b=50),
-        paper_bgcolor="#333333",
-        plot_bgcolor="#333333",
-        font=dict(family="Arial", size=12, color="white"),
-        title_font=dict(color="white", size=20)
+        title="Poker Tournaments",
+        xaxis_title="Time",
+        yaxis_title="Tournaments",
+        legend_title="Site",
+        margin=dict(l=20, r=20, t=50, b=20),
     )
-    fig.update_xaxes(type='date', showgrid=True, gridwidth=1, gridcolor='#444')
-    fig.update_yaxes(showgrid=False, tickfont=dict(color="white"))
 
-    # Export the graph as an HTML file
-    graph_html = fig.to_html(full_html=False)
+    # Generate HTML output
+    fig_html = pio.to_html(fig, full_html=False, include_plotlyjs='cdn')
+    html_str = f'''
+    <html>
+    <head>
+        <title>Poker Tournaments</title>
+        <style>
+            .stats-box {{
+                padding: 10px;
+                border: 1px solid #ccc;
+                margin-bottom: 20px;
+                background-color: #f9f9f9;
+                width: 80%;
+                margin-left: auto;
+                margin-right: auto;
+            }}
+            .stats-box h2 {{
+                text-align: center;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="stats-box">
+            <h2>Session Summary</h2>
+            <p>{stats_text}</p>
+        </div>
+        {fig_html}
+    </body>
+    </html>
+    '''
 
-    # Create the statistics block with better styling and reduced spacing between stats
-    stats_html = f"""
-        <p><b>Session duration:</b> <span class="highlight">{stats['Session duration']}</span></p>
-        <p><b>Unique tournaments played:</b> <span class="highlight">{stats['Unique tournaments played']}</span></p>
-        <p><b>Re-Entries:</b> <span class="highlight">{stats['Re-Entries']}</span></p>
-        <p><b>Total bullets:</b> <span class="highlight">{stats['Total bullets']}</span></p>
-        <p><b>Average duration per tournament:</b> <span class="highlight">{stats['Average duration per tournament']}</span></p>
-        <p><b>Maximum tables played at a time:</b> <span class="highlight">{stats['Maximum tables played at a time']}</span></p>
-        <p><b>Average tables played:</b> <span class="highlight">{stats['Average tables played']}</span></p>
-        <p><b>Peak tables played for (total time):</b> <span class="highlight">{stats['Peak tables played for (total time)']}</span></p>
-    """
+    # Save HTML file
+    output_file = 'poker_tournaments.html'
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(html_str)
 
-    # Combine the graph and statistics into one HTML page
-    with open("session_stats.html", "w", encoding="utf-8") as f:
-        f.write(f"""
-        <html>
-        <head>
-            <title>Tournament Session Analyzer</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    background-color: #333333;
-                    color: white;
-                }}
-                .container {{
-                    width: 90%;
-                    margin: 0 auto;
-                }}
-                .stats {{
-                    padding: 15px;
-                    background-color: #222;
-                    border: 1px solid #444;
-                    border-radius: 5px;
-                    margin-bottom: 15px;
-                }}
-                h3 {{
-                    color: #58A65A;
-                    text-align: center;
-                }}
-                p {{
-                    color: white;
-                    margin: 5px 0;  /* Reducing space between paragraphs */
-                }}
-                .highlight {{
-                    color: #58A65A;
-                    font-weight: bold;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="stats">
-                    <h3>Session Statistics</h3>
-                    {stats_html}
-                </div>
-                {graph_html}
-            </div>
-        </body>
-        </html>
-        """)
+    # Open the HTML file in the default web browser
+    webbrowser.open('file://' + os.path.realpath(output_file))
 
-    return os.path.abspath("session_stats.html")
-    
-# Function to process the selected files
-def process_selected_files(selected_files, category):
-    if not selected_files:
-        messagebox.showwarning("No Files Selected", "Please select at least one .txt file to process.")
-        return
+    # Close the Tkinter root window
+    root.destroy()
 
-    if category not in EXTRACTION_MODULES:
-        messagebox.showerror("Invalid Category", f"The selected category '{category}' is not supported.")
-        return
+# Main GUI setup
+root = tk.Tk()
+root.title("Poker Hand History Processor")
+root.geometry("400x200")
 
-    extraction_module = EXTRACTION_MODULES[category]
+btn_select = tk.Button(root, text="Select Hand History Files", command=select_files)
+btn_select.pack(expand=True)
 
-    tournament_data = defaultdict(list)
-    for file_path in selected_files:
-        extracted_entries = extraction_module.extract_info(file_path, category)
-        if extracted_entries:
-            for entry in extracted_entries:
-                tournament_data[entry['tournament_name']].append(entry)
-        else:
-            messagebox.showwarning("Extraction Warning", f"No valid data extracted from file: {os.path.basename(file_path)}")
-
-    if not tournament_data:
-        messagebox.showerror("Processing Error", "No valid tournament data found in the selected files.")
-        return
-
-    stats = calculate_statistics(tournament_data)
-    html_path = plot_tournament_data(tournament_data, stats)
-
-    # Open the generated HTML in the default web browser
-    webbrowser.open(f'file://{html_path}')
-
-# Function to handle file selection
-def select_files():
-    file_paths = filedialog.askopenfilenames(
-        title="Select Tournament Log Files",
-        filetypes=(("Text Files", "*.txt"), ("All Files", "*.*"))
-    )
-    if file_paths:
-        app.selected_files = list(file_paths)
-        update_file_list()
-
-# Function to update the file list display
-def update_file_list():
-    file_listbox.delete(0, tk.END)
-    for file in app.selected_files:
-        filename = os.path.basename(file)
-        file_listbox.insert(tk.END, f"• {filename}")
-
-# Initialize the Tkinter application
-app = tk.Tk()
-app.title("Tournament Session Analyzer")
-app.geometry("700x500")
-app.resizable(False, False)
-
-# Store selected files
-app.selected_files = []
-
-# Configure grid layout
-app.columnconfigure(0, weight=1)
-app.rowconfigure(0, weight=1)
-
-# Main frame
-main_frame = ttk.Frame(app, padding="20")
-main_frame.pack(fill=tk.BOTH, expand=True)
-
-# Dropdown for category selection
-category_label = ttk.Label(main_frame, text="Select Category:")
-category_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
-
-category_var = tk.StringVar()
-category_combobox = ttk.Combobox(main_frame, textvariable=category_var, state="readonly")
-category_combobox['values'] = ("GG", "888", "ACR")
-category_combobox.current(0)
-category_combobox.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
-
-# File selection button
-select_button = ttk.Button(main_frame, text="Select Files", command=select_files)
-select_button.grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(0, 5))
-
-# Listbox to display selected files with a scrollbar
-listbox_frame = ttk.Frame(main_frame)
-listbox_frame.grid(row=2, column=0, columnspan=2, sticky=tk.W+tk.E, pady=(0, 10))
-
-file_listbox = tk.Listbox(listbox_frame, height=15, width=80, selectmode=tk.BROWSE, bg="#f0f0f0")
-file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-scrollbar = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL, command=file_listbox.yview)
-scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-file_listbox.config(yscrollcommand=scrollbar.set)
-
-# Process & Display button
-process_button = ttk.Button(main_frame, text="Process & Display", command=lambda: process_selected_files(app.selected_files, category_var.get()))
-process_button.grid(row=3, column=0, columnspan=2, pady=(10, 0))
-
-# Run the application
-app.mainloop()
+root.mainloop()
