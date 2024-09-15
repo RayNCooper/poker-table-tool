@@ -9,24 +9,22 @@ import pandas as pd
 import plotly.io as pio
 import webbrowser
 
-# Function to select files
 def select_files():
     files = filedialog.askopenfilenames(title="Select Hand History Files")
     if files:
-        root.withdraw()  # Hide the root window
+        root.withdraw()
         process_files(files)
     else:
         messagebox.showerror("Error", "No files selected.")
 
-# Function to extract tournament label from file name
 def extract_tournament_label(file_name):
     patterns = [
-        r'Tournament (.+?) \(',  # Pattern for 888poker example
-        r'TN-(.+?) GAMETYPE-',   # Pattern for HH20230320 example
-        r'- (.+)\.txt$',         # Pattern for GG example
-        r'HH\d+ (.+?)\.txt$',    # Pattern for HH files
-        r'\d+_(.+?)\(\d+\)_real_holdem_no-limit\.txt$',  # Pattern for 20230312_MYSTERY KO example
-        r'\d+_(.+?)\.txt$',      # Additional pattern for general cases
+        r'Tournament (.+?) \(',
+        r'TN-(.+?) GAMETYPE-',
+        r'- (.+)\.txt$',
+        r'HH\d+ (.+?)\.txt$',
+        r'\d+_(.+?)\(\d+\)_real_holdem_no-limit\.txt$',
+        r'\d+_(.+?)\.txt$',
     ]
     for pattern in patterns:
         match = re.search(pattern, file_name)
@@ -34,12 +32,10 @@ def extract_tournament_label(file_name):
             return match.group(1).strip()
     return None
 
-# Function to process files
 def process_files(file_list):
     hand_histories = []
 
     for file in file_list:
-        # Skip summary files
         if "Summary" in os.path.basename(file):
             print(f"Skipping summary file {file}")
             continue
@@ -52,7 +48,7 @@ def process_files(file_list):
                     hands, player = parse_hand_history(content, site, tournament_label)
                     if not player:
                         print(f"No player found in file {file}")
-                        continue  # Skip if no player found
+                        continue
                     for hand in hands:
                         hand['player'] = player
                     hand_histories.extend(hands)
@@ -67,7 +63,6 @@ def process_files(file_list):
 
     plot_gantt_chart(hand_histories)
 
-# Function to identify the site based on content
 def identify_site(content):
     if "PokerStars Hand" in content:
         return "PokerStars"
@@ -82,12 +77,12 @@ def identify_site(content):
     else:
         return None
 
-# Function to parse hand history
 def parse_hand_history(content, site, tournament_label=None):
     hands = []
     player = None
+
     if site == "ACR":
-        # Regex patterns for ACR
+        # Extract player
         player_seats = re.findall(r"Seat \d+: (\S+)", content)
         if player_seats:
             player_counts = defaultdict(int)
@@ -98,21 +93,19 @@ def parse_hand_history(content, site, tournament_label=None):
             print("Player not found in ACR hand history.")
             return [], None
 
-        tournament_pattern = r"Tournament #(\d+)"
-        date_pattern = r"- (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})"
-        hand_pattern = r"Game Hand #(\d+) - Tournament #(\d+)"
-        date_format = '%Y/%m/%d %H:%M:%S'
+        # Split into individual hands
+        hand_blocks = re.split(r'\n\n+', content)
+        if not hand_blocks:
+            print("No hands found in ACR hand history.")
+            return [], None
 
-        tournaments = re.findall(tournament_pattern, content)
-        dates = re.findall(date_pattern, content)
-        hands_info = re.findall(hand_pattern, content)
+        # Extract starting stack and blinds from the first hand
+        first_hand = hand_blocks[0]
+        starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d,\.]+)\)"
+        blinds_pattern = r"Level \d+ \(([\d,\.]+)/([\d,\.]+)\)"
 
-        # Extract starting stack and blinds
-        starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d\.]+)\)"
-        blinds_pattern = r"Level \d+ \(([\d\.]+)/([\d\.]+)\)"
-
-        starting_stack_match = re.search(starting_stack_pattern, content)
-        blinds_match = re.search(blinds_pattern, content)
+        starting_stack_match = re.search(starting_stack_pattern, first_hand)
+        blinds_match = re.search(blinds_pattern, first_hand)
 
         if starting_stack_match and blinds_match:
             starting_stack = float(starting_stack_match.group(1).replace(',', ''))
@@ -120,6 +113,15 @@ def parse_hand_history(content, site, tournament_label=None):
             starting_bb = starting_stack / big_blind
         else:
             starting_bb = None
+
+        # Extract tournament info
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"- (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})"
+        hand_pattern = r"Game Hand #(\d+) - Tournament #(\d+)"
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
 
         tournament_name = tournaments[0] if tournaments else 'Unknown'
         if not tournament_label:
@@ -131,48 +133,7 @@ def parse_hand_history(content, site, tournament_label=None):
                 'site': site,
                 'tournament_id': tour_id,
                 'hand_id': hand_id,
-                'date': parse_date(hand_date, [date_format]),
-                'player': player,
-                'starting_bb': starting_bb,
-                'tournament_name': tournament_name,
-                'tournament_label': tournament_label,
-            })
-
-    elif site == "888":
-        # Similar code for 888
-        player_seats = re.findall(r"Seat \d+: (\S+)", content)
-        if player_seats:
-            player_counts = defaultdict(int)
-            for p in player_seats:
-                player_counts[p] += 1
-            player = max(player_counts, key=player_counts.get)
-        else:
-            print("Player not found in 888 hand history.")
-            return [], None
-
-        tournament_pattern = r"Tournament #(\d+)"
-        date_pattern = r"\*\*\* (.+)"
-        hand_pattern = r"Game (\d+)"
-        date_format = '%d %m %Y %H:%M:%S'
-
-        tournaments = re.findall(tournament_pattern, content)
-        dates = re.findall(date_pattern, content)
-        hands_info = re.findall(hand_pattern, content)
-
-        # Do not extract starting_bb for 888
-        starting_bb = None
-
-        tournament_name = tournaments[0] if tournaments else 'Unknown'
-        if not tournament_label:
-            tournament_label = tournament_name
-
-        for idx, hand_id in enumerate(hands_info):
-            hand_date = dates[idx] if idx < len(dates) else None
-            hands.append({
-                'site': site,
-                'tournament_id': tournament_name,
-                'hand_id': hand_id,
-                'date': parse_date(hand_date, [date_format]),
+                'date': parse_date(hand_date, ['%Y/%m/%d %H:%M:%S']),
                 'player': player,
                 'starting_bb': starting_bb,
                 'tournament_name': tournament_name,
@@ -180,8 +141,8 @@ def parse_hand_history(content, site, tournament_label=None):
             })
 
     elif site == "GG":
-        # Similar code for GG
-        player_seats = re.findall(r"Seat \d+: (\S+) \(", content)
+        # Extract player
+        player_seats = re.findall(r"Seat \d+: (\S+)", content)
         if player_seats:
             player_counts = defaultdict(int)
             for p in player_seats:
@@ -191,20 +152,19 @@ def parse_hand_history(content, site, tournament_label=None):
             print("Player not found in GG hand history.")
             return [], None
 
-        tournament_pattern = r"Tournament #(\d+)"
-        date_pattern = r"Level\d+\([\d,]+/[\d,]+\) - (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})"
-        hand_pattern = r"Poker Hand #(\S+): Tournament #(\d+)"
-        date_format = '%Y/%m/%d %H:%M:%S'
+        # Split into individual hands
+        hand_blocks = re.findall(r'(Poker Hand #.*?)(?=Poker Hand #|$)', content, re.DOTALL)
+        if not hand_blocks:
+            print("No hands found in GG hand history.")
+            return [], None
 
-        tournaments = re.findall(tournament_pattern, content)
-        dates = re.findall(date_pattern, content)
-        hands_info = re.findall(hand_pattern, content)
-
+        # Extract starting stack and blinds from the earliest hand
+        first_hand = hand_blocks[-1]
         starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d,]+) in chips\)"
         blinds_pattern = r"Level\d+\(([\d,]+)/([\d,]+)\)"
 
-        starting_stack_match = re.search(starting_stack_pattern, content)
-        blinds_match = re.search(blinds_pattern, content)
+        starting_stack_match = re.search(starting_stack_pattern, first_hand)
+        blinds_match = re.search(blinds_pattern, first_hand)
 
         if starting_stack_match and blinds_match:
             starting_stack = float(starting_stack_match.group(1).replace(',', ''))
@@ -213,9 +173,22 @@ def parse_hand_history(content, site, tournament_label=None):
         else:
             starting_bb = None
 
+        # Extract tournament info
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"Level\d+\([\d,]+/[\d,]+\) - (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})"
+        hand_pattern = r"Poker Hand #(\S+): Tournament #(\d+)"
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
+
         tournament_name = tournaments[0] if tournaments else 'Unknown'
         if not tournament_label:
             tournament_label = tournament_name
+
+        # Reverse dates and hands_info since hands are in reverse order
+        dates = dates[::-1]
+        hands_info = hands_info[::-1]
 
         for idx, (hand_id, tour_id) in enumerate(hands_info):
             hand_date = dates[idx] if idx < len(dates) else None
@@ -223,7 +196,7 @@ def parse_hand_history(content, site, tournament_label=None):
                 'site': site,
                 'tournament_id': tour_id,
                 'hand_id': hand_id,
-                'date': parse_date(hand_date, [date_format]),
+                'date': parse_date(hand_date, ['%Y/%m/%d %H:%M:%S']),
                 'player': player,
                 'starting_bb': starting_bb,
                 'tournament_name': tournament_name,
@@ -231,8 +204,14 @@ def parse_hand_history(content, site, tournament_label=None):
             })
 
     elif site == "PokerStars":
-        # Similar code for PokerStars
-        player_seats = re.findall(r"Seat \d+: (\S+) \(", content)
+        # Split into individual hands
+        hand_blocks = re.findall(r'(PokerStars Hand #.*?)(?=(?:\n\n|\Z))', content, re.DOTALL)
+        if not hand_blocks:
+            print("No hands found in PokerStars hand history.")
+            return [], None
+
+        # Extract player
+        player_seats = re.findall(r"Seat \d+: (\S+)(?: \(|$)", content)
         if player_seats:
             player_counts = defaultdict(int)
             for p in player_seats:
@@ -242,20 +221,13 @@ def parse_hand_history(content, site, tournament_label=None):
             print("Player not found in PokerStars hand history.")
             return [], None
 
-        tournament_pattern = r"Tournament #(\d+)"
-        date_pattern = r"\[([^\]]+)\]"
-        hand_pattern = r"PokerStars Hand #(\d+): Tournament #(\d+)"
-        date_formats = ['%Y/%m/%d %H:%M:%S ET', '%Y/%m/%d %H:%M:%S CET']
-
-        tournaments = re.findall(tournament_pattern, content)
-        dates = re.findall(date_pattern, content)
-        hands_info = re.findall(hand_pattern, content)
-
+        # Extract starting stack and blinds from the first hand
+        first_hand = hand_blocks[0]
         starting_stack_pattern = rf"Seat \d+: {re.escape(player)} \(([\d,]+) in chips"
         blinds_pattern = r"Level \w+ \(([\d,]+)/([\d,]+)\)"
 
-        starting_stack_match = re.search(starting_stack_pattern, content)
-        blinds_match = re.search(blinds_pattern, content)
+        starting_stack_match = re.search(starting_stack_pattern, first_hand)
+        blinds_match = re.search(blinds_pattern, first_hand)
 
         if starting_stack_match and blinds_match:
             starting_stack = float(starting_stack_match.group(1).replace(',', ''))
@@ -264,13 +236,50 @@ def parse_hand_history(content, site, tournament_label=None):
         else:
             starting_bb = None
 
-        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        # Extract tournament info
+        tournament_pattern = r"Tournament #(\d+)"
+        tournament_match = re.search(tournament_pattern, content)
+        tournament_name = tournament_match.group(1) if tournament_match else 'Unknown'
         if not tournament_label:
             tournament_label = tournament_name
 
-        for idx, (hand_id, tour_id) in enumerate(hands_info):
-            hand_date = dates[idx] if idx < len(dates) else None
-            hand_date_parsed = parse_date(hand_date, date_formats)
+        for hand in hand_blocks:
+            # Extract hand_id and tournament_id
+            hand_info_match = re.search(r"PokerStars Hand #(\d+): Tournament #(\d+)", hand)
+            if hand_info_match:
+                hand_id, tour_id = hand_info_match.groups()
+            else:
+                continue
+
+            # Extract date and adjust by adding 2 hours
+            date_match = re.search(r"\[([\d/ :]+) (\w+)\]", hand)
+            if date_match:
+                hand_date = date_match.group(1)
+                # date_format should match the date string
+                date_format = '%Y/%m/%d %H:%M:%S'
+                try:
+                    dt = datetime.datetime.strptime(hand_date, date_format)
+                    # Add 2 hours to align timezone
+                    dt += datetime.timedelta(hours=6)
+                    hand_date_parsed = dt
+                except:
+                    hand_date_parsed = None
+            else:
+                # Alternative date format without timezone
+                date_match_alt = re.search(r"- ([\d/ :]+)", hand)
+                if date_match_alt:
+                    hand_date = date_match_alt.group(1)
+                    date_format = '%Y/%m/%d %H:%M:%S'
+                    try:
+                        dt = datetime.datetime.strptime(hand_date, date_format)
+                        # Add 2 hours to align timezone
+                        dt += datetime.timedelta(hours=2)
+                        hand_date_parsed = dt
+                    except:
+                        hand_date_parsed = None
+                else:
+                    hand_date_parsed = None
+
             hands.append({
                 'site': site,
                 'tournament_id': tour_id,
@@ -282,8 +291,48 @@ def parse_hand_history(content, site, tournament_label=None):
                 'tournament_label': tournament_label,
             })
 
+    elif site == "888":
+        # Extract player
+        player_seats = re.findall(r"Seat \d+: (\S+)", content)
+        if player_seats:
+            player_counts = defaultdict(int)
+            for p in player_seats:
+                player_counts[p] += 1
+            player = max(player_counts, key=player_counts.get)
+        else:
+            print("Player not found in 888 hand history.")
+            return [], None
+
+        starting_bb = None  # 888 may not provide starting BB
+
+        # Extract tournament info
+        tournament_pattern = r"Tournament #(\d+)"
+        date_pattern = r"\*\*\* (.+)"
+        hand_pattern = r"Game (\d+)"
+
+        tournaments = re.findall(tournament_pattern, content)
+        dates = re.findall(date_pattern, content)
+        hands_info = re.findall(hand_pattern, content)
+
+        tournament_name = tournaments[0] if tournaments else 'Unknown'
+        if not tournament_label:
+            tournament_label = tournament_name
+
+        for idx, hand_id in enumerate(hands_info):
+            hand_date = dates[idx] if idx < len(dates) else None
+            hands.append({
+                'site': site,
+                'tournament_id': tournament_name,
+                'hand_id': hand_id,
+                'date': parse_date(hand_date, ['%d %m %Y %H:%M:%S']),
+                'player': player,
+                'starting_bb': starting_bb,
+                'tournament_name': tournament_name,
+                'tournament_label': tournament_label,
+            })
+
     elif site == "Winamax":
-        # Similar code for Winamax
+        # Extract player
         player_seats = re.findall(r"Seat \d+: (\S+)", content)
         if player_seats:
             player_counts = defaultdict(int)
@@ -294,17 +343,16 @@ def parse_hand_history(content, site, tournament_label=None):
             print("Player not found in Winamax hand history.")
             return [], None
 
+        starting_bb = None  # Winamax may not provide starting BB
+
+        # Extract tournament info
         tournament_pattern = r"Tournament \"(.+?)\""
         date_pattern = r"- (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) UTC"
         hand_pattern = r"HandId: #(\d+)-"
-        date_format = '%Y/%m/%d %H:%M:%S'
 
         tournaments = re.findall(tournament_pattern, content)
         dates = re.findall(date_pattern, content)
         hands_info = re.findall(hand_pattern, content)
-
-        # Do not extract starting_bb for Winamax
-        starting_bb = None
 
         tournament_name = tournaments[0] if tournaments else 'Unknown'
         if not tournament_label:
@@ -312,7 +360,17 @@ def parse_hand_history(content, site, tournament_label=None):
 
         for idx, hand_id in enumerate(hands_info):
             hand_date = dates[idx] if idx < len(dates) else None
-            hand_date_parsed = parse_date(hand_date, [date_format])
+            if hand_date:
+                try:
+                    dt = datetime.datetime.strptime(hand_date, '%Y/%m/%d %H:%M:%S')
+                    # Assuming UTC, convert to the common timezone by adding 2 hours
+                    dt += datetime.timedelta(hours=2)
+                    hand_date_parsed = dt
+                except:
+                    hand_date_parsed = None
+            else:
+                hand_date_parsed = None
+
             hands.append({
                 'site': site,
                 'tournament_id': tournament_name,
@@ -326,19 +384,17 @@ def parse_hand_history(content, site, tournament_label=None):
 
     return hands, player
 
-# Function to parse date
 def parse_date(date_str, date_formats):
     if date_str:
         for fmt in date_formats:
             try:
-                return datetime.datetime.strptime(date_str.strip(), fmt)
-            except:
+                dt_naive = datetime.datetime.strptime(date_str.strip(), fmt)
+                return dt_naive
+            except Exception:
                 continue
     return None
 
-# Function to plot Gantt chart using plotly
 def plot_gantt_chart(hands):
-    # Prepare data
     tournament_entries = defaultdict(lambda: {'dates': [], 'starting_bb': None, 'tournament_label': None})
     for hand in hands:
         if hand['date']:
@@ -355,13 +411,16 @@ def plot_gantt_chart(hands):
         site, tournament_id, player = key
         dates = value['dates']
         starting_bb = value['starting_bb']
+        dates = [d for d in dates if d is not None]
+        if not dates:
+            continue
         dates.sort()
         tournament_label = value['tournament_label']
-        # Detect re-entries based on time gaps
+        tournament_display = f"{tournament_label} ({site})"
         entries_in_tournament = []
         current_entry = [dates[0], dates[0]]
         for i in range(1, len(dates)):
-            if (dates[i] - dates[i-1]).total_seconds() > 1800:  # Gap of more than 30 minutes
+            if (dates[i] - dates[i-1]).total_seconds() > 1800:
                 current_entry[1] = dates[i-1]
                 entries_in_tournament.append(tuple(current_entry))
                 current_entry = [dates[i], dates[i]]
@@ -370,16 +429,12 @@ def plot_gantt_chart(hands):
         current_entry[1] = dates[-1]
         entries_in_tournament.append(tuple(current_entry))
         for idx, (start_time, end_time) in enumerate(entries_in_tournament):
-            entry_type = 'Entry' if idx == 0 else 'Re-Entry'
-            category = site  # Use only 'site' for coloring to limit legend items to 5
             entries.append({
-                'Tournament': tournament_label,
+                'Tournament': tournament_display,
                 'Start': start_time,
                 'Finish': end_time,
                 'Site': site,
-                'Category': category,
                 'Player': player,
-                'Entry': entry_type,
                 'Starting_BB': starting_bb,
             })
 
@@ -396,98 +451,16 @@ def plot_gantt_chart(hands):
         '888': '#ffa500'
     }
 
-    # Compute statistics
-    session_start = df['Start'].min()
-    session_end = df['Finish'].max()
-    session_duration = session_end - session_start
+    df['Start'] = pd.to_datetime(df['Start'], errors='coerce')
+    df['Finish'] = pd.to_datetime(df['Finish'], errors='coerce')
 
-    unique_tournaments = df['Tournament'].nunique()
-    total_bullets = len(df)
-    re_entries = total_bullets - unique_tournaments
+    df = df.dropna(subset=['Start', 'Finish'])
 
-    df['Duration'] = df['Finish'] - df['Start']
-    tournament_durations = df.groupby('Tournament')['Duration'].sum()
-    avg_duration_per_tournament = tournament_durations.mean()
-
-    # Compute tables played over time
-    events = []
-    for index, row in df.iterrows():
-        events.append((row['Start'], 'start'))
-        events.append((row['Finish'], 'end'))
-    events.sort()
-
-    current_tables = 0
-    max_tables = 0
-    time_of_last_event = None
-    table_time = defaultdict(datetime.timedelta)
-
-    for time, event_type in events:
-        if time_of_last_event is not None:
-            duration = time - time_of_last_event
-            table_time[current_tables] += duration
-        if event_type == 'start':
-            current_tables += 1
-            if current_tables > max_tables:
-                max_tables = current_tables
-        elif event_type == 'end':
-            current_tables -= 1
-        time_of_last_event = time
-
-    total_session_duration = session_end - session_start
-
-    total_weighted_time = sum(tables * duration.total_seconds() for tables, duration in table_time.items())
-    average_tables = total_weighted_time / total_session_duration.total_seconds() if total_session_duration.total_seconds() > 0 else 0
-
-    peak_tables_time = table_time[max_tables]
-
-    # Format statistics
-    stats_text = (
-        f"<b>Session Duration:</b> {str(session_duration)}<br>"
-        f"<b>Unique Tournaments Played:</b> {unique_tournaments}<br>"
-        f"<b>Re-Entries:</b> {re_entries}<br>"
-        f"<b>Total Bullets:</b> {total_bullets}<br>"
-        f"<b>Avg Duration per Tournament:</b> {str(avg_duration_per_tournament)}<br>"
-        f"<b>Maximum Tables Played at a Time:</b> {max_tables}<br>"
-        f"<b>Average Tables Played:</b> {average_tables:.2f}<br>"
-        f"<b>Peak Tables Played For:</b> {str(peak_tables_time)}"
-    )
-
-    # Create the plot
-    df['Start_str'] = df['Start'].dt.strftime('%Y-%m-%d %H:%M:%S')
-    df['Finish_str'] = df['Finish'].dt.strftime('%Y-%m-%d %H:%M:%S')
-
-    # Prepare hover data
-    # Create a new column 'Starting_BB_Display' for hover data
     df['Starting_BB_Display'] = df.apply(
-        lambda row: f"{row['Starting_BB']:.1f}" if row['Site'] in ['ACR', 'PokerStars', 'GG'] and pd.notnull(row['Starting_BB']) else None, axis=1
+        lambda row: f"Starting BB={row['Starting_BB']:.1f}" if pd.notnull(row['Starting_BB']) else "Starting BB=N/A", axis=1
     )
 
-    # Define hover data columns
-    hover_data = {
-        'Site': True,
-        'Start_str': True,
-        'Finish_str': True,
-        'Tournament': True,
-        'Entry': True,
-        'Starting_BB_Display': True,
-    }
-
-    # Build custom hover template
-    hover_template = (
-        'Site=%{customdata[0]}<br>'
-        'Start=%{customdata[1]}<br>'
-        'Finish=%{customdata[2]}<br>'
-        'Tournament=%{customdata[3]}<br>'
-        'Entry Type=%{customdata[4]}<br>'
-    )
-    hover_template += '%{customdata[5]}<extra></extra>'
-
-    # Prepare custom data for hover
-    df['Starting_BB_Hover'] = df.apply(
-        lambda row: f"Starting BB={row['Starting_BB_Display']}" if row['Starting_BB_Display'] else '', axis=1
-    )
-
-    custom_data = df[['Site', 'Start_str', 'Finish_str', 'Tournament', 'Entry', 'Starting_BB_Hover']]
+    custom_data = df[['Starting_BB_Display']]
 
     fig = px.timeline(
         df,
@@ -496,9 +469,10 @@ def plot_gantt_chart(hands):
         y="Tournament",
         color="Site",
         color_discrete_map=base_colors,
-        hover_data=None,
         custom_data=custom_data,
     )
+
+    hover_template = '%{customdata[0]}<extra></extra>'
 
     fig.update_traces(hovertemplate=hover_template)
 
@@ -511,49 +485,26 @@ def plot_gantt_chart(hands):
         margin=dict(l=20, r=20, t=50, b=20),
     )
 
-    # Generate HTML output
     fig_html = pio.to_html(fig, full_html=False, include_plotlyjs='cdn')
     html_str = f'''
     <html>
     <head>
         <title>Poker Tournaments</title>
-        <style>
-            .stats-box {{
-                padding: 10px;
-                border: 1px solid #ccc;
-                margin-bottom: 20px;
-                background-color: #f9f9f9;
-                width: 80%;
-                margin-left: auto;
-                margin-right: auto;
-            }}
-            .stats-box h2 {{
-                text-align: center;
-            }}
-        </style>
     </head>
     <body>
-        <div class="stats-box">
-            <h2>Session Summary</h2>
-            <p>{stats_text}</p>
-        </div>
         {fig_html}
     </body>
     </html>
     '''
 
-    # Save HTML file
     output_file = 'poker_tournaments.html'
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(html_str)
 
-    # Open the HTML file in the default web browser
     webbrowser.open('file://' + os.path.realpath(output_file))
 
-    # Close the Tkinter root window
     root.destroy()
 
-# Main GUI setup
 root = tk.Tk()
 root.title("Poker Hand History Processor")
 root.geometry("400x200")
